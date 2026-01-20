@@ -1,0 +1,4 @@
+# Example OpenRC inittab entry for tty1 autologin
+# Replace __USER__ with your username.
+
+c1:12345:respawn:/sbin/agetty -a __USER__ 38400 tty1 linux

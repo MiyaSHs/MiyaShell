@@ -1,0 +1,129 @@
+#!/bin/sh
+# gamescope-fg-lite
+#
+# Minimal helper for gamescope embedded sessions (SteamOS-like "gamemode").
+#
+# In gamescope embedded mode, windows typically need an X11 property named
+# "STEAM_GAME" to be shown/managed. Steam sets this automatically for Steam
+# games, but non-Steam launchers (Lutris, custom scripts, etc) usually don't.
+#
+# This helper assigns STEAM_GAME=<appid> to *new* windows that appear after we
+# spawn a command. It's not perfect, but it is surprisingly effective for many
+# launchers that ultimately create Xwayland windows.
+#
+# Dependencies: xprop (required). Optional: (none).
+#
+# Usage:
+#   gamescope-fg-lite --appid 769 --wait -- qs -p /path/to/shell
+#   gamescope-fg-lite --appid 13371337 -- lutris lutris:rungameid/42
+
+set -eu
+
+APPID=""
+WAIT=0
+TIMEOUT_SECS=10
+POLL_SECS=0.05
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 --appid <int> [--wait] [--timeout <sec>] [--poll <sec>] -- <command...>
+EOF
+}
+
+# Parse args
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --appid)
+      APPID="${2:-}"; shift 2 ;;
+    --wait)
+      WAIT=1; shift ;;
+    --timeout)
+      TIMEOUT_SECS="${2:-}"; shift 2 ;;
+    --poll)
+      POLL_SECS="${2:-}"; shift 2 ;;
+    --)
+      shift; break ;;
+    -h|--help)
+      usage; exit 0 ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      usage; exit 2 ;;
+  esac
+done
+
+if [ -z "$APPID" ] || [ $# -lt 1 ]; then
+  usage; exit 2
+fi
+
+if ! command -v xprop >/dev/null 2>&1; then
+  echo "ERROR: xprop not found. Install x11-apps/xprop (Gentoo)" >&2
+  exit 127
+fi
+
+get_client_list() {
+  # Output: space-separated list of 0xHEX window IDs.
+  # Example line:
+  #   _NET_CLIENT_LIST(WINDOW): window id # 0x04000007, 0x0400000e
+  xprop -root _NET_CLIENT_LIST 2>/dev/null \
+    | sed -e 's/.*# //' -e 's/,/ /g' \
+    | tr -s ' ' \
+    | sed -e 's/^ *//' -e 's/ *$//'
+}
+
+contains_word() {
+  # $1: "haystack" (space separated), $2: needle
+  echo " $1 " | grep -q " $2 "
+}
+
+BASELINE="$(get_client_list || true)"
+
+# Launch
+"$@" &
+CMD_PID=$!
+
+ASSIGNED=""
+START_TS=$(date +%s)
+
+while :; do
+  NOW=$(date +%s)
+  if [ $((NOW - START_TS)) -gt "$TIMEOUT_SECS" ]; then
+    break
+  fi
+
+  CURRENT="$(get_client_list || true)"
+
+  # For each current window, if it wasn't in baseline and we haven't assigned it,
+  # set STEAM_GAME property.
+  for WIN in $CURRENT; do
+    if contains_word "$BASELINE" "$WIN"; then
+      continue
+    fi
+    if contains_word "$ASSIGNED" "$WIN"; then
+      continue
+    fi
+
+    # Set STEAM_GAME property (32-bit CARDINAL)
+    xprop -id "$WIN" -f STEAM_GAME 32c -set STEAM_GAME "$APPID" >/dev/null 2>&1 || true
+
+    ASSIGNED="$ASSIGNED $WIN"
+  done
+
+  # If we are not waiting, exit once we've tagged at least one new window.
+  if [ "$WAIT" -eq 0 ] && [ -n "$(echo "$ASSIGNED" | tr -d ' ')" ]; then
+    break
+  fi
+
+  # If command died and we're not waiting, bail.
+  if ! kill -0 "$CMD_PID" 2>/dev/null; then
+    break
+  fi
+
+  sleep "$POLL_SECS"
+done
+
+if [ "$WAIT" -eq 1 ]; then
+  wait "$CMD_PID"
+fi
+
+exit 0
