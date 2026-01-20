@@ -146,10 +146,7 @@ main() {
   say "Project root: ${ROOT_DIR}"
 
   # System install is what you want for SDDM + global PATH.
-  local want_system="N"
-  if [[ "${EUID}" -eq 0 ]]; then
-    want_system="Y"
-  fi
+  local want_system="Y"
   if prompt_yn "Install system-wide (recommended for SDDM & global PATH)?" "${want_system}"; then
     have_sudo || die "Need sudo (or run as root) for system install."
 
